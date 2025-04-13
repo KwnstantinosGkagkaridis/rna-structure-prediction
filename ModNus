@@ -1,0 +1,293 @@
+import numpy as np
+import re
+import matplotlib.pyplot as plt
+import time
+
+# ------------------------- #
+# DATA EXTRACTION FUNCTIONS
+# ------------------------- #
+
+# Extract sequences and structures from a file
+def extract_sequences_and_structures(file_path):
+    """
+    Extracts RNA sequences and their corresponding structures from a text file.
+    
+    :param file_path: Path to the input file
+    :return: Two lists - one for RNA sequences, one for dot-bracket structures
+    """
+    sequences = []
+    structures = []
+
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+
+    sequence_pattern = re.compile(r'^[ACGU]+$')          # RNA sequence
+    structure_pattern = re.compile(r'^[.()\[\]]+$')      # Dot-bracket structure
+
+    for line in lines:
+        line = line.strip()
+        if sequence_pattern.match(line):
+            sequences.append(line)
+        elif structure_pattern.match(line):
+            structures.append(line)
+
+    return sequences, structures
+
+# Load data
+file_path = "vdt212_sequences.txt"
+sequences, structures = extract_sequences_and_structures(file_path)
+
+# ------------------------------ #
+# BASE NUSSINOV IMPLEMENTATION
+# ------------------------------ #
+
+start_time1 = time.time()
+
+# Check if two bases can form a canonical or wobble pair
+def is_complementary(base1, base2):
+    return (base1 == 'A' and base2 == 'U') or \
+           (base1 == 'U' and base2 == 'A') or \
+           (base1 == 'G' and base2 == 'C') or \
+           (base1 == 'C' and base2 == 'G') or \
+           (base1 == 'U' and base2 == 'G') or \
+           (base1 == 'G' and base2 == 'U')
+
+min_loop_size = 3
+
+# Standard Nussinov dynamic programming algorithm
+def nussinov(sequence):
+    n = len(sequence)
+    m = np.zeros((n, n), dtype=int)
+
+    for l in range(1, n):
+        for i in range(n - l):
+            j = i + l
+
+            if j - i < min_loop_size:
+                continue
+
+            left_cell = m[i][j - 1]
+            down_cell = m[i + 1][j]
+            diagonal_cell = m[i + 1][j - 1]
+
+            if is_complementary(sequence[i], sequence[j]):
+                m[i][j] = max(left_cell, down_cell, diagonal_cell + 1)
+            else:
+                m[i][j] = max(left_cell, down_cell)
+
+    return m, lambda i, j: backtrack(m, sequence, i, j)
+
+# Reconstruct optimal structure from score matrix
+def backtrack(m, sequence, i, j):
+    pairs = []
+    if i >= j:
+        return pairs
+
+    if m[i][j] == m[i + 1][j]:
+        return backtrack(m, sequence, i + 1, j)
+    elif m[i][j] == m[i][j - 1]:
+        return backtrack(m, sequence, i, j - 1)
+    elif m[i][j] == m[i + 1][j - 1] + 1:
+        pairs.append((i, j))
+        return pairs + backtrack(m, sequence, i + 1, j - 1)
+    else:
+        for k in range(i, j):
+            if m[i][j] == m[i][k] + m[k + 1][j]:
+                return backtrack(m, sequence, i, k) + backtrack(m, sequence, k + 1, j)
+
+    return pairs
+
+# Build dot-bracket structure from base pair list
+def structure_from_traceback(traceback, sequence):
+    n = len(sequence)
+    structure = ['.'] * n
+    for i, j in traceback:
+        structure[i] = '('
+        structure[j] = ')'
+    return ''.join(structure)
+
+# Apply Nussinov to all sequences
+def predict_structures_for_all(sequences):
+    predicted_structures = []
+    for sequence in sequences:
+        m, backtrack_fn = nussinov(sequence)
+        traceback = backtrack_fn(0, len(sequence) - 1)
+        predicted_structure = structure_from_traceback(traceback, sequence)
+        predicted_structures.append(predicted_structure)
+    return predicted_structures
+
+normal_nussinov_structures = predict_structures_for_all(sequences)
+
+end_time1 = time.time()
+execution_time1 = end_time1 - start_time1
+
+print(f"Normal Nussinov algorithm execution time: {execution_time1} seconds")
+
+# ------------------------------------- #
+# MODIFIED NUSSINOV WITH PSEUDOKNOTS
+# ------------------------------------- #
+
+start_time2 = time.time()
+
+# Identify base-paired regions (pseudoknots) from dot-bracket structure
+def extract_knot_ranges(structures):
+    knot_list = []
+
+    def find_knots(structures_string):
+        knots = []
+        start = None
+        stack = []
+
+        for i, char in enumerate(structures_string):
+            if char in "([":
+                if start is None:
+                    start = i
+                stack.append(char)
+            elif char in ")]":
+                stack.pop()
+                if not stack:
+                    knots.append([start, i + 1])
+                    start = None
+
+        return knots
+
+    for structure_string in structures:
+        knot_list.append(find_knots(structure_string))
+
+    return knot_list
+
+# Nussinov algorithm that avoids certain base-pairing regions
+def nussinov(sequence, blocked_ranges, min_loop_size=3):
+    n = len(sequence)
+    m = np.zeros((n, n), dtype=int)
+
+    for l in range(1, n):
+        for i in range(n - l):
+            j = i + l
+
+            if j - i < min_loop_size:
+                continue
+
+            if any(start <= i <= end or start <= j <= end for start, end in blocked_ranges):
+                continue
+
+            left_cell = m[i][j - 1]
+            down_cell = m[i + 1][j]
+            diagonal_cell = m[i + 1][j - 1]
+
+            if is_complementary(sequence[i], sequence[j]):
+                m[i][j] = max(left_cell, down_cell, diagonal_cell + 1)
+            else:
+                m[i][j] = max(left_cell, down_cell)
+
+    return m, lambda i, j: backtrack(m, sequence, i, j, blocked_ranges)
+
+# Backtracking that skips blocked regions
+def backtrack(m, sequence, i, j, blocked_ranges):
+    pairs = []
+    while i < j:
+        if any(start <= i <= end or start <= j <= end for start, end in blocked_ranges):
+            break
+
+        if m[i][j] == m[i + 1][j]:
+            i += 1
+        elif m[i][j] == m[i][j - 1]:
+            j -= 1
+        else:
+            pairs.append((i, j))
+            i += 1
+            j -= 1
+
+    return pairs
+
+# Merge blocked ranges and new base pairs into final dot-bracket structure
+def convert_to_dot_bracket(sequence, pairs, blocked_ranges, structure_string):
+    n = len(sequence)
+    dot_bracket = ['.'] * n
+
+    for start, end in blocked_ranges:
+        dot_bracket[start:end] = list(structure_string[start:end])
+
+    for i, j in pairs:
+        if dot_bracket[i] == '.' and dot_bracket[j] == '.':
+            dot_bracket[i] = '('
+            dot_bracket[j] = ')'
+
+    return ''.join(dot_bracket)
+
+# Apply modified algorithm to each sequence
+knot_structures = []
+
+for idx, structure in enumerate(structures):
+    sequence = sequences[idx]
+    blocked_ranges = extract_knot_ranges([structure])[0]
+
+    all_pairs = []
+    for i, (start, end) in enumerate(blocked_ranges):
+        if i == 0:
+            region_start = 0
+            region_end = start
+        else:
+            region_start = blocked_ranges[i - 1][1]
+            region_end = start
+
+        if region_start < region_end:
+            scoring_matrix, traceback_function = nussinov(sequence[region_start:region_end], [])
+            pairs = traceback_function(0, region_end - region_start - 1)
+            all_pairs.extend([(region_start + i, region_start + j) for i, j in pairs])
+
+    if blocked_ranges and blocked_ranges[-1][1] < len(sequence):
+        region_start = blocked_ranges[-1][1]
+        region_end = len(sequence)
+        scoring_matrix, traceback_function = nussinov(sequence[region_start:region_end], [])
+        pairs = traceback_function(0, region_end - region_start - 1)
+        all_pairs.extend([(region_start + i, region_start + j) for i, j in pairs])
+
+    dot_bracket_structure = convert_to_dot_bracket(sequence, all_pairs, blocked_ranges, structure)
+    knot_structures.append(dot_bracket_structure)
+
+end_time2 = time.time()
+execution_time2 = end_time2 - start_time2
+
+print(f"Modified Nussinov algorithm execution time: {execution_time2} seconds")
+
+# -------------------------------------- #
+# DISTANCE CALCULATION + PLOTTING
+# -------------------------------------- #
+
+# Convert dot-bracket to base pair set
+def parse_structure(structure):
+    stack = []
+    base_pairs = set()
+    for i, char in enumerate(structure):
+        if char == '(':
+            stack.append(i)
+        elif char == ')':
+            if stack:
+                j = stack.pop()
+                base_pairs.add((j, i))
+    return base_pairs
+
+# Compute symmetric difference between two base-pair sets
+def pairwise_distance(structure1, structure2):
+    pairs1 = parse_structure(structure1)
+    pairs2 = parse_structure(structure2)
+    unique_pairs = pairs1.symmetric_difference(pairs2)
+    return len(unique_pairs)
+
+# Get distances between standard and pseudoknot-aware structures
+pairwise_distances = [
+    pairwise_distance(normal_nussinov_structures[i], knot_structures[i])
+    for i in range(len(normal_nussinov_structures))
+]
+
+# Plotting distance vs. RNA length
+sequence_lengths = [len(structure) for structure in normal_nussinov_structures]
+
+plt.figure(figsize=(8, 6))
+plt.scatter(sequence_lengths, pairwise_distances, color='blue', alpha=0.7)
+plt.title("Pairwise Distances vs. Sequence Lengths")
+plt.xlabel("Sequence Length")
+plt.ylabel("Pairwise Distance")
+plt.grid(True)
+plt.show()
