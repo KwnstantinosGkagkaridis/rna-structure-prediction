@@ -59,3 +59,7 @@ Additionally, the repository provides tools for comparing the predicted structur
 The repository generates a scatter plot showing:
 - X-axis: RNA sequence length.
 - Y-axis: Pairwise distance (symmetric difference) between structures predicted by the standard and pseudoknot-aware algorithms.
+
+Below is the visualization of pairwise distances vs. RNA sequence length:
+
+![Pairwise Distances Plot](pairwise_distances_plot.png)
